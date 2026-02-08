@@ -153,10 +153,15 @@ public actor GatewayNodeSession {
         }
 
         do {
+            self.logger.notice("node session: calling channel.connect()")
             try await channel.connect()
+            self.logger.notice("node session: channel.connect() succeeded, waiting for snapshot")
             _ = await self.waitForSnapshot(timeoutMs: 500)
+            self.logger.notice("node session: notifying connected")
             await self.notifyConnectedIfNeeded()
+            self.logger.notice("node session: connected callback done")
         } catch {
+            self.logger.error("node session: connect failed: \(error.localizedDescription, privacy: .public)")
             await onDisconnected(error.localizedDescription)
             throw error
         }
@@ -238,6 +243,7 @@ public actor GatewayNodeSession {
     }
 
     private func resetConnectionState() {
+        self.logger.notice("node session: resetConnectionState() called")
         self.hasNotifiedConnected = false
         self.snapshotReceived = false
         if !self.snapshotWaiters.isEmpty {
@@ -285,8 +291,12 @@ public actor GatewayNodeSession {
     }
 
     private func notifyConnectedIfNeeded() async {
-        guard !self.hasNotifiedConnected else { return }
+        guard !self.hasNotifiedConnected else {
+            self.logger.notice("node session: skipping onConnected (already notified)")
+            return
+        }
         self.hasNotifiedConnected = true
+        self.logger.notice("node session: firing onConnected callback")
         await self.onConnected?()
     }
 

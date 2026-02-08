@@ -225,13 +225,15 @@ final class NodeAppModel {
             var attempt = 0
             while !Task.isCancelled {
                 await MainActor.run {
-                    if attempt == 0 {
-                        self.gatewayStatusText = "Connecting…"
-                    } else {
-                        self.gatewayStatusText = "Reconnecting…"
+                    if !self.gatewayConnected {
+                        if attempt == 0 {
+                            self.gatewayStatusText = "Connecting…"
+                        } else {
+                            self.gatewayStatusText = "Reconnecting…"
+                        }
+                        self.gatewayServerName = nil
+                        self.gatewayRemoteAddress = nil
                     }
-                    self.gatewayServerName = nil
-                    self.gatewayRemoteAddress = nil
                 }
 
                 do {
