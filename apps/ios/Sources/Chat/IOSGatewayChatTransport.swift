@@ -2,6 +2,9 @@ import OpenClawChatUI
 import OpenClawKit
 import OpenClawProtocol
 import Foundation
+import OSLog
+
+private let transportLog = Logger(subsystem: "ai.openclaw", category: "ChatTransport")
 
 struct IOSGatewayChatTransport: OpenClawChatTransport, Sendable {
     private let gateway: GatewayNodeSession
@@ -100,12 +103,19 @@ struct IOSGatewayChatTransport: OpenClawChatTransport, Sendable {
                             as: OpenClawGatewayHealthOK.self))?.ok ?? true
                         continuation.yield(.health(ok: ok))
                     case "chat":
-                        guard let payload = evt.payload else { break }
+                        transportLog.notice("[EVT-STREAM] chat event received")
+                        guard let payload = evt.payload else {
+                            transportLog.notice("[EVT-STREAM] chat event: no payload")
+                            break
+                        }
                         if let chatPayload = try? GatewayPayloadDecoding.decode(
                             payload,
                             as: OpenClawChatEventPayload.self)
                         {
+                            transportLog.notice("[EVT-STREAM] chat decoded ok runId=\(chatPayload.runId ?? "nil", privacy: .public) state=\(chatPayload.state ?? "nil", privacy: .public)")
                             continuation.yield(.chat(chatPayload))
+                        } else {
+                            transportLog.notice("[EVT-STREAM] chat decode FAILED")
                         }
                     case "agent":
                         guard let payload = evt.payload else { break }

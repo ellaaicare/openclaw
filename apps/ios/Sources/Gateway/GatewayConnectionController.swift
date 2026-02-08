@@ -322,13 +322,13 @@ final class GatewayConnectionController {
         let displayName = self.resolvedDisplayName(defaults: defaults)
 
         return GatewayConnectOptions(
-            role: "node",
-            scopes: [],
+            role: "operator",
+            scopes: ["operator.admin", "operator.approvals", "operator.pairing"],
             caps: self.currentCaps(),
             commands: self.currentCommands(),
             permissions: [:],
             clientId: "openclaw-ios",
-            clientMode: "node",
+            clientMode: "ui",
             clientDisplayName: displayName)
     }
 

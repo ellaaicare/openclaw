@@ -132,12 +132,6 @@ final class TalkModeManager: NSObject {
     }
 
     private func startRecognition() throws {
-        #if targetEnvironment(simulator)
-            throw NSError(domain: "TalkMode", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Talk mode is not supported on the iOS simulator",
-            ])
-        #endif
-
         self.stopRecognition()
         self.speechRecognizer = SFSpeechRecognizer()
         guard let recognizer = self.speechRecognizer else {

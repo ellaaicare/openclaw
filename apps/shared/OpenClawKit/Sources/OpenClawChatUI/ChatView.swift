@@ -215,7 +215,11 @@ public struct OpenClawChatView: View {
         } else {
             base = self.viewModel.messages
         }
-        return self.mergeToolResults(in: base)
+        let filtered = base.filter { msg in
+            let role = msg.role.lowercased()
+            return role != "system"
+        }
+        return self.mergeToolResults(in: filtered)
     }
 
     @ViewBuilder

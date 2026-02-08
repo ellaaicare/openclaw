@@ -168,6 +168,7 @@ public final class OpenClawChatViewModel {
             let payload = try await self.transport.requestHistory(sessionKey: self.sessionKey)
             self.messages = Self.decodeMessages(payload.messages ?? [])
             self.sessionId = payload.sessionId
+            chatUILogger.notice("[BOOTSTRAP] history ok, \(self.messages.count, privacy: .public) msgs, sessionId=\(payload.sessionId ?? "nil", privacy: .public)")
             if let level = payload.thinkingLevel, !level.isEmpty {
                 self.thinkingLevel = level
             }
@@ -176,7 +177,7 @@ public final class OpenClawChatViewModel {
             self.errorText = nil
         } catch {
             self.errorText = error.localizedDescription
-            chatUILogger.error("bootstrap failed \(error.localizedDescription, privacy: .public)")
+            chatUILogger.notice("[BOOTSTRAP] FAILED: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -220,8 +221,10 @@ public final class OpenClawChatViewModel {
 
         guard self.healthOK else {
             self.errorText = "Gateway health not OK; cannot send"
+            chatUILogger.notice("[CHAT-SEND] blocked: healthOK=false")
             return
         }
+        chatUILogger.notice("[CHAT-SEND] starting send, healthOK=true")
 
         self.isSending = true
         self.errorText = nil
@@ -285,6 +288,7 @@ public final class OpenClawChatViewModel {
                 thinking: self.thinkingLevel,
                 idempotencyKey: runId,
                 attachments: encodedAttachments)
+            chatUILogger.notice("[CHAT-SEND] ok runId=\(response.runId, privacy: .public) status=\(response.status, privacy: .public)")
             if response.runId != runId {
                 self.clearPendingRun(runId)
                 self.pendingRuns.insert(response.runId)
@@ -293,7 +297,7 @@ public final class OpenClawChatViewModel {
         } catch {
             self.clearPendingRun(runId)
             self.errorText = error.localizedDescription
-            chatUILogger.error("chat.send failed \(error.localizedDescription, privacy: .public)")
+            chatUILogger.notice("[CHAT-SEND] FAILED: \(error.localizedDescription, privacy: .public)")
         }
 
         self.isSending = false
@@ -357,6 +361,9 @@ public final class OpenClawChatViewModel {
     private func handleTransportEvent(_ evt: OpenClawChatTransportEvent) {
         switch evt {
         case let .health(ok):
+            if ok != self.healthOK {
+                chatUILogger.notice("[TRANSPORT] health changed to \(ok, privacy: .public)")
+            }
             self.healthOK = ok
         case .tick:
             Task { await self.pollHealthIfNeeded(force: false) }
@@ -371,7 +378,9 @@ public final class OpenClawChatViewModel {
     }
 
     private func handleChatEvent(_ chat: OpenClawChatEventPayload) {
+        chatUILogger.notice("[CHAT-EVT] runId=\(chat.runId ?? "nil", privacy: .public) state=\(chat.state ?? "nil", privacy: .public) sessionKey=\(chat.sessionKey ?? "nil", privacy: .public) ourSession=\(self.sessionKey, privacy: .public)")
         if let sessionKey = chat.sessionKey, sessionKey != self.sessionKey {
+            chatUILogger.notice("[CHAT-EVT] SKIPPED: sessionKey mismatch")
             return
         }
 
