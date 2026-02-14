@@ -32,22 +32,38 @@ final class GatewayConnectionController {
         self.discovery.setDebugLoggingEnabled(defaults.bool(forKey: "gateway.discovery.debugLogs"))
 
         #if DEBUG
-        if let envHost = ProcessInfo.processInfo.environment["OPENCLAW_GATEWAY_HOST"], !envHost.isEmpty {
-            let envPort = Int(ProcessInfo.processInfo.environment["OPENCLAW_GATEWAY_PORT"] ?? "19001") ?? 19001
+        // Debug auto-connect: env vars (simulator) or pre-configured manual defaults (device).
+        let envHost = ProcessInfo.processInfo.environment["OPENCLAW_GATEWAY_HOST"]
+        let manualHost = defaults.bool(forKey: "gateway.manual.enabled")
+            ? defaults.string(forKey: "gateway.manual.host")?.trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil
+        if let debugHost = envHost ?? manualHost, !debugHost.isEmpty {
+            let debugPort: Int
+            let useTLS: Bool
+            if envHost != nil {
+                debugPort = Int(ProcessInfo.processInfo.environment["OPENCLAW_GATEWAY_PORT"] ?? "19001") ?? 19001
+                useTLS = false
+            } else {
+                debugPort = defaults.integer(forKey: "gateway.manual.port")
+                useTLS = defaults.bool(forKey: "gateway.manual.tls")
+            }
+            let resolvedPort = debugPort > 0 ? debugPort : (useTLS ? 443 : 19001)
             defaults.removeObject(forKey: "gateway.preferredStableID")
             defaults.removeObject(forKey: "gateway.lastDiscoveredStableID")
-            let stableID = self.manualStableID(host: envHost, port: envPort)
+            let stableID = self.manualStableID(host: debugHost, port: resolvedPort)
             let instanceId = defaults.string(forKey: "node.instanceId")?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let token = GatewaySettingsStore.loadGatewayToken(instanceId: instanceId)
-            if let url = self.buildGatewayURL(host: envHost, port: envPort, useTLS: false) {
+            if let url = self.buildGatewayURL(host: debugHost, port: resolvedPort, useTLS: useTLS) {
                 var options = self.makeConnectOptions(stableID: stableID)
                 options.includeDeviceIdentity = false
                 self.didAutoConnect = true
+                let tls = useTLS ? self.resolveManualTLSParams(
+                    stableID: stableID, tlsEnabled: true, allowTOFUReset: false) : nil
                 let cfg = GatewayConnectConfig(
                     url: url,
                     stableID: stableID,
-                    tls: nil,
+                    tls: tls,
                     token: token,
                     password: nil,
                     nodeOptions: options)
