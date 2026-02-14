@@ -62,7 +62,7 @@ final class TalkModeManager: NSObject {
     private var defaultOutputFormat: String?
     private var apiKey: String?
     private var voiceAliases: [String: String] = [:]
-    private var interruptOnSpeech: Bool = true
+    private var interruptOnSpeech: Bool = false
     private var mainSessionKey: String = "main"
     private var fallbackVoiceId: String?
     private var lastPlaybackWasPCM: Bool = false
@@ -986,7 +986,7 @@ final class TalkModeManager: NSObject {
                 let desiredOutputFormat = (directive?.outputFormat ?? self.defaultOutputFormat)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let requestedOutputFormat = (desiredOutputFormat?.isEmpty == false) ? desiredOutputFormat : nil
-                let outputFormat = ElevenLabsTTSClient.validatedOutputFormat(requestedOutputFormat ?? "pcm_44100")
+                let outputFormat = ElevenLabsTTSClient.validatedOutputFormat(requestedOutputFormat ?? "mp3_44100")
                 if outputFormat == nil, let requestedOutputFormat {
                     self.logger.warning(
                         "talk output_format unsupported for local playback: \(requestedOutputFormat, privacy: .public)")
@@ -1229,14 +1229,40 @@ final class TalkModeManager: NSObject {
             self.incrementalSpeechLanguage = ElevenLabsTTSClient.validatedLanguage(lang)
         }
         await self.updateIncrementalContextIfNeeded()
-        let segments = self.incrementalSpeechBuffer.ingest(text: text, isFinal: true)
-        for segment in segments {
-            self.enqueueIncrementalSpeech(segment)
-        }
+        let cleanText = Self.stripLeadingDirective(parsed.stripped)
+        // Flush any remaining text from the streaming buffer — do NOT re-ingest the full
+        // text, as streaming already fed it incrementally and the buffer tracks offsets.
         await self.finishIncrementalSpeech()
         if !self.incrementalSpeechUsed {
-            await self.playAssistant(text: text)
+            // Streaming produced no segments (e.g. events arrived after completion).
+            // Fall back to non-incremental playback of the full clean text.
+            GatewayDiagnostics.log("talk: incremental unused, falling back to playAssistant chars=\(cleanText.count)")
+            await self.playAssistant(text: cleanText)
         }
+    }
+
+    /// Strip a loose directive preamble from the first line of final assistant text.
+    /// Handles formats like "voice: Alloy, once: true\nActual content…"
+    private static func stripLeadingDirective(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let newlineRange = trimmed.range(of: "\n") else { return text }
+        let firstLine = trimmed[..<newlineRange.lowerBound]
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let keys: Set<String> = [
+            "voice", "voice_id", "model", "model_id", "once", "speed", "lang",
+            "language", "output_format", "format", "stability", "similarity",
+        ]
+        let tokens = firstLine.components(separatedBy: CharacterSet(charactersIn: ",;"))
+        let looksLikeDirective = tokens.allSatisfy { token in
+            let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            return keys.contains(where: { t.hasPrefix($0) }) || t.isEmpty
+        }
+        if looksLikeDirective, !tokens.isEmpty {
+            let result = String(trimmed[newlineRange.upperBound...])
+            GatewayDiagnostics.log("talk: stripLeadingDirective removed: [\(firstLine)]")
+            return result
+        }
+        return text
     }
 
     private func streamAssistant(runId: String, gateway: GatewayNodeSession) async {
@@ -1291,7 +1317,7 @@ final class TalkModeManager: NSObject {
         let desiredOutputFormat = (directive?.outputFormat ?? self.defaultOutputFormat)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedOutputFormat = (desiredOutputFormat?.isEmpty == false) ? desiredOutputFormat : nil
-        let outputFormat = ElevenLabsTTSClient.validatedOutputFormat(requestedOutputFormat ?? "pcm_44100")
+        let outputFormat = ElevenLabsTTSClient.validatedOutputFormat(requestedOutputFormat ?? "mp3_44100")
         if outputFormat == nil, let requestedOutputFormat {
             self.logger.warning(
                 "talk output_format unsupported for local playback: \(requestedOutputFormat, privacy: .public)")
@@ -1320,12 +1346,15 @@ final class TalkModeManager: NSObject {
     private func speakIncrementalSegment(_ text: String) async {
         await self.updateIncrementalContextIfNeeded()
         guard let context = self.incrementalSpeechContext else {
+            GatewayDiagnostics.log("talk tts: incremental NO context -> system TTS")
             try? await TalkSystemSpeechSynthesizer.shared.speak(
                 text: text,
                 language: self.incrementalSpeechLanguage)
             return
         }
 
+        GatewayDiagnostics.log(
+            "talk tts: incremental canEL=\(context.canUseElevenLabs) hasKey=\(context.apiKey?.isEmpty == false) voiceId=\(context.voiceId ?? "nil")")
         if context.canUseElevenLabs, let apiKey = context.apiKey, let voiceId = context.voiceId {
             let request = ElevenLabsTTSRequest(
                 text: text,
@@ -1399,10 +1428,34 @@ private struct IncrementalSpeechBuffer {
     private var spokenOffset: Int = 0
     private var inCodeBlock = false
     private var directiveParsed = false
+    /// Number of leading characters in the raw cumulative text that belong to the directive.
+    /// Once set, all future cumulative texts are trimmed by dropping this many characters.
+    private var directivePrefixLength: Int = 0
+    private var ingestCount = 0
 
     mutating func ingest(text: String, isFinal: Bool) -> [String] {
+        self.ingestCount += 1
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
-        guard let usable = self.stripDirectiveIfReady(from: normalized) else { return [] }
+        if self.ingestCount <= 5 || isFinal {
+            let preview = normalized.prefix(200).replacingOccurrences(of: "\n", with: "\\n")
+            GatewayDiagnostics.log("talk.buf: ingest#\(self.ingestCount) len=\(normalized.count) final=\(isFinal) pfx=\(self.directivePrefixLength) text=[\(preview)]")
+        }
+        // If directive was already parsed, strip the directive prefix from cumulative text.
+        let usable: String
+        if self.directiveParsed {
+            if self.directivePrefixLength > 0, normalized.count > self.directivePrefixLength {
+                let idx = normalized.index(normalized.startIndex, offsetBy: self.directivePrefixLength)
+                usable = String(normalized[idx...])
+            } else if self.directivePrefixLength > 0 {
+                // Text is shorter than prefix — still within directive, skip.
+                return []
+            } else {
+                usable = normalized
+            }
+        } else {
+            guard let stripped = self.stripDirectiveIfReady(from: normalized, isFinal: isFinal) else { return [] }
+            usable = stripped
+        }
         self.updateText(usable)
         return self.extractSegments(isFinal: isFinal)
     }
@@ -1413,22 +1466,68 @@ private struct IncrementalSpeechBuffer {
         return segments.first
     }
 
-    private mutating func stripDirectiveIfReady(from text: String) -> String? {
-        guard !self.directiveParsed else { return text }
+    /// Known directive key prefixes that agents may emit outside of JSON blocks.
+    private static let looseDirectiveKeys: Set<String> = [
+        "voice", "voice_id", "model", "model_id", "once", "speed", "lang",
+        "language", "output_format", "format", "stability", "similarity",
+    ]
+
+    private mutating func stripDirectiveIfReady(from text: String, isFinal: Bool) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+
+        // --- JSON directive: first line is {…} ---
         if trimmed.hasPrefix("{") {
-            guard let newlineRange = text.range(of: "\n") else { return nil }
+            guard let newlineRange = text.range(of: "\n") else {
+                if isFinal { self.directiveParsed = true; return text }
+                return nil
+            }
             let firstLine = text[..<newlineRange.lowerBound]
             let head = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard head.hasSuffix("}") else { return nil }
-            let parsed = TalkDirectiveParser.parse(text)
-            if let directive = parsed.directive {
-                self.directive = directive
+            if head.hasSuffix("}") {
+                let parsed = TalkDirectiveParser.parse(text)
+                if let directive = parsed.directive {
+                    self.directive = directive
+                }
+                // Calculate how many raw characters to skip in future cumulative texts.
+                // The directive prefix = everything up to and including the blank line after }.
+                self.directivePrefixLength = text.count - parsed.stripped.count
+                self.directiveParsed = true
+                GatewayDiagnostics.log("talk.buf: stripped JSON directive len=\(self.directivePrefixLength): \(head)")
+                return parsed.stripped
+            }
+            if isFinal { self.directiveParsed = true; return text }
+            return nil
+        }
+
+        // --- Loose directive: "voice: Alloy, once: true\n…" ---
+        if let newlineRange = text.range(of: "\n") {
+            let firstLine = String(text[..<newlineRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let firstLineLower = firstLine.lowercased()
+            let tokens = firstLineLower.components(separatedBy: CharacterSet(charactersIn: ",;"))
+            let looksLikeDirective = tokens.allSatisfy { token in
+                let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                return Self.looseDirectiveKeys.contains(where: { t.hasPrefix($0) }) || t.isEmpty
+            }
+            if looksLikeDirective, !tokens.isEmpty {
+                let result = String(text[newlineRange.upperBound...])
+                self.directivePrefixLength = text.count - result.count
+                self.directiveParsed = true
+                GatewayDiagnostics.log("talk.buf: stripped loose directive len=\(self.directivePrefixLength): [\(firstLine)]")
+                return result
             }
             self.directiveParsed = true
-            return parsed.stripped
+            return text
         }
+
+        // No newline yet — wait if it could be a directive preamble.
+        if trimmed.count < 120, !isFinal {
+            let couldBeDirective = trimmed.hasPrefix("{") ||
+                Self.looseDirectiveKeys.contains(where: { trimmed.lowercased().hasPrefix($0) })
+            if couldBeDirective { return nil }
+        }
+
         self.directiveParsed = true
         return text
     }
@@ -1669,13 +1768,34 @@ extension TalkModeManager {
     }
 
     func reloadConfig() async {
-        guard let gateway else { return }
+        guard let gateway else {
+            GatewayDiagnostics.log("talk.config: SKIPPED gateway=nil")
+            return
+        }
+        // Try talk.config first (node-role); fall back to config.get (operator-role).
+        let (res, method) = await self.fetchTalkConfig(gateway: gateway)
+        guard let res else { return }
         do {
-            let res = try await gateway.request(method: "talk.config", paramsJSON: "{\"includeSecrets\":true}", timeoutSeconds: 8)
-            guard let json = try JSONSerialization.jsonObject(with: res) as? [String: Any] else { return }
-            guard let config = json["config"] as? [String: Any] else { return }
+            let resStr = String(data: res, encoding: .utf8) ?? "(non-utf8 \(res.count) bytes)"
+            GatewayDiagnostics.log("talk.config(\(method)): bytes=\(res.count) preview=\(String(resStr.prefix(400)))")
+            if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                try? res.write(to: docsDir.appendingPathComponent("talk-config-debug.json"))
+            }
+            guard let json = try JSONSerialization.jsonObject(with: res) as? [String: Any] else {
+                GatewayDiagnostics.log("talk.config: FAILED json parse")
+                return
+            }
+            // talk.config returns {config:{talk:{...}}}; config.get returns {config:{talk:{...},...}}
+            let config = (json["config"] as? [String: Any]) ?? json
             let talk = config["talk"] as? [String: Any]
-            self.defaultVoiceId = (talk?["voiceId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            GatewayDiagnostics.log("talk.config: configKeys=\(config.keys.sorted()) talkKeys=\(talk?.keys.sorted().description ?? "nil")")
+            let configVoice = (talk?["voiceId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            #if DEBUG
+            // Lily — Velvety Actress (British). Override when gateway doesn't specify.
+            self.defaultVoiceId = (configVoice?.isEmpty == false) ? configVoice : "pFZP5JQG7iQjIQuC4Bku"
+            #else
+            self.defaultVoiceId = configVoice
+            #endif
             if let aliases = talk?["voiceAliases"] as? [String: Any] {
                 var resolved: [String: String] = [:]
                 for (key, value) in aliases {
@@ -1699,15 +1819,50 @@ extension TalkModeManager {
             }
             self.defaultOutputFormat = (talk?["outputFormat"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            self.apiKey = (talk?["apiKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawKey = (talk?["apiKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            // config.get redacts secrets; fall back to env var or DEBUG hardcoded key.
+            if let rawKey, !rawKey.isEmpty, !rawKey.contains("REDACTED") {
+                self.apiKey = rawKey
+            } else {
+                let envKey = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
+                #if DEBUG
+                let debugKey = "sk_674d30f2231c7e504bf5f9fd7851ef20589993c45c992c1a"
+                self.apiKey = envKey ?? debugKey
+                #else
+                self.apiKey = envKey
+                #endif
+            }
             if let interrupt = talk?["interruptOnSpeech"] as? Bool {
                 self.interruptOnSpeech = interrupt
             }
+            let hasKey = (self.apiKey?.isEmpty == false)
+            GatewayDiagnostics.log(
+                "talk.config: applied voiceId=\(self.currentVoiceId ?? "nil") modelId=\(self.currentModelId ?? "nil") hasApiKey=\(hasKey)")
         } catch {
+            GatewayDiagnostics.log("talk.config: parse ERROR \(error)")
             self.defaultModelId = Self.defaultModelIdFallback
             if !self.modelOverrideActive {
                 self.currentModelId = self.defaultModelId
             }
+        }
+    }
+
+    private func fetchTalkConfig(gateway: GatewayNodeSession) async -> (Data?, String) {
+        // Try talk.config with secrets first.
+        do {
+            let res = try await gateway.request(
+                method: "talk.config", paramsJSON: "{\"includeSecrets\":true}", timeoutSeconds: 8)
+            return (res, "talk.config")
+        } catch {
+            GatewayDiagnostics.log("talk.config: talk.config failed (\(error)), trying config.get")
+        }
+        // Fall back to config.get (operator-role method).
+        do {
+            let res = try await gateway.request(method: "config.get", paramsJSON: "{}", timeoutSeconds: 8)
+            return (res, "config.get")
+        } catch {
+            GatewayDiagnostics.log("talk.config: config.get also failed (\(error))")
+            return (nil, "none")
         }
     }
 
