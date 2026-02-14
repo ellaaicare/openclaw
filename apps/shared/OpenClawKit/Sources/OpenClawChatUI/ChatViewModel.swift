@@ -379,7 +379,7 @@ public final class OpenClawChatViewModel {
 
     private func handleChatEvent(_ chat: OpenClawChatEventPayload) {
         chatUILogger.notice("[CHAT-EVT] runId=\(chat.runId ?? "nil", privacy: .public) state=\(chat.state ?? "nil", privacy: .public) sessionKey=\(chat.sessionKey ?? "nil", privacy: .public) ourSession=\(self.sessionKey, privacy: .public)")
-        if let sessionKey = chat.sessionKey, sessionKey != self.sessionKey {
+        if let sessionKey = chat.sessionKey, !self.sessionKeyMatches(sessionKey) {
             chatUILogger.notice("[CHAT-EVT] SKIPPED: sessionKey mismatch")
             return
         }
@@ -488,6 +488,16 @@ public final class OpenClawChatViewModel {
         if let reason, !reason.isEmpty {
             self.errorText = reason
         }
+    }
+
+    /// Checks whether an incoming event sessionKey matches our subscribed session.
+    /// The gateway may expand a bare key like "main" into an agent-scoped key such
+    /// as "agent:main:openai:<uuid>", so we accept a match when the event key ends
+    /// with ":<ourKey>" or equals it exactly.
+    private func sessionKeyMatches(_ eventKey: String) -> Bool {
+        if eventKey == self.sessionKey { return true }
+        if eventKey.hasSuffix(":\(self.sessionKey)") { return true }
+        return false
     }
 
     private func pollHealthIfNeeded(force: Bool) async {
