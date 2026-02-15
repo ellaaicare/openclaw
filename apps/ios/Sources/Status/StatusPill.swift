@@ -20,10 +20,10 @@ struct StatusPill: View {
 
         var color: Color {
             switch self {
-            case .connected: .green
-            case .connecting: .yellow
-            case .error: .red
-            case .disconnected: .gray
+            case .connected: EllaBrand.success
+            case .connecting: EllaBrand.warning
+            case .error: EllaBrand.error
+            case .disconnected: EllaBrand.textTertiary
             }
         }
     }

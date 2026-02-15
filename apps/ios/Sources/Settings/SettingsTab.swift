@@ -14,6 +14,9 @@ struct SettingsTab: View {
     @AppStorage("node.instanceId") private var instanceId: String = UUID().uuidString
     @AppStorage("voiceWake.enabled") private var voiceWakeEnabled: Bool = false
     @AppStorage("talk.enabled") private var talkEnabled: Bool = false
+    @AppStorage("talk.voiceMode") private var voiceModeRaw: String = TalkVoiceMode.elevenLabsTTS.rawValue
+    @AppStorage("talk.v2vMode") private var v2vModeRaw: String = GrokV2VMode.v3Rich.rawValue
+    @AppStorage("talk.voiceProxyKey") private var voiceProxyKey: String = ""
     @AppStorage("talk.button.enabled") private var talkButtonEnabled: Bool = true
     @AppStorage("camera.enabled") private var cameraEnabled: Bool = true
     @AppStorage("location.enabledMode") private var locationEnabledModeRaw: String = OpenClawLocationMode.off.rawValue
@@ -235,6 +238,42 @@ struct SettingsTab: View {
                             .onChange(of: self.talkEnabled) { _, newValue in
                                 self.appModel.setTalkEnabled(newValue)
                             }
+
+                        Picker("Voice Engine", selection: self.$voiceModeRaw) {
+                            Text("ElevenLabs TTS").tag(TalkVoiceMode.elevenLabsTTS.rawValue)
+                            Text("Grok V2V").tag(TalkVoiceMode.grokV2V.rawValue)
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(!self.talkEnabled)
+                        .onChange(of: self.voiceModeRaw) { _, newValue in
+                            self.appModel.talkMode.setVoiceMode(
+                                TalkVoiceMode(rawValue: newValue) ?? .elevenLabsTTS)
+                        }
+                        Text("ElevenLabs uses text-to-speech. Grok V2V streams audio directly for lower latency.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
+                        if self.voiceModeRaw == TalkVoiceMode.grokV2V.rawValue {
+                            Picker("V2V Mode", selection: self.$v2vModeRaw) {
+                                ForEach(GrokV2VMode.allCases, id: \.rawValue) { mode in
+                                    Text(mode.displayName).tag(mode.rawValue)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .onChange(of: self.v2vModeRaw) { _, newValue in
+                                self.appModel.talkMode.setV2VMode(
+                                    GrokV2VMode(rawValue: newValue) ?? .v3Rich)
+                            }
+                            Text((GrokV2VMode(rawValue: self.v2vModeRaw) ?? .v3Rich).description)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+
+                            SecureField("Voice Proxy Key", text: self.$voiceProxyKey)
+                                .textContentType(.password)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        }
+
                         // Keep this separate so users can hide the side bubble without disabling Talk Mode.
                         Toggle("Show Talk Button", isOn: self.$talkButtonEnabled)
 

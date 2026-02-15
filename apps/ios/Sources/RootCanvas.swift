@@ -260,13 +260,13 @@ private struct CanvasContent: View {
             return StatusPill.Activity(
                 title: "Foreground required",
                 systemImage: "exclamationmark.triangle.fill",
-                tint: .orange)
+                tint: EllaBrand.warning)
         }
 
         let gatewayStatus = self.appModel.gatewayStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
         let gatewayLower = gatewayStatus.lowercased()
         if gatewayLower.contains("repair") {
-            return StatusPill.Activity(title: "Repairing…", systemImage: "wrench.and.screwdriver", tint: .orange)
+            return StatusPill.Activity(title: "Repairing…", systemImage: "wrench.and.screwdriver", tint: EllaBrand.warning)
         }
         if gatewayLower.contains("approval") || gatewayLower.contains("pairing") {
             return StatusPill.Activity(title: "Approval pending", systemImage: "person.crop.circle.badge.clock")
@@ -274,7 +274,7 @@ private struct CanvasContent: View {
         // Avoid duplicating the primary gateway status ("Connecting…") in the activity slot.
 
         if self.appModel.screenRecordActive {
-            return StatusPill.Activity(title: "Recording screen…", systemImage: "record.circle.fill", tint: .red)
+            return StatusPill.Activity(title: "Recording screen…", systemImage: "record.circle.fill", tint: EllaBrand.error)
         }
 
         if let cameraHUDText, !cameraHUDText.isEmpty, let cameraHUDKind {
@@ -286,13 +286,13 @@ private struct CanvasContent: View {
                 tint = nil
             case .recording:
                 systemImage = "video.fill"
-                tint = .red
+                tint = EllaBrand.error
             case .success:
                 systemImage = "checkmark.circle.fill"
-                tint = .green
+                tint = EllaBrand.success
             case .error:
                 systemImage = "exclamationmark.triangle.fill"
-                tint = .red
+                tint = EllaBrand.error
             }
             return StatusPill.Activity(title: cameraHUDText, systemImage: systemImage, tint: tint)
         }
@@ -300,7 +300,7 @@ private struct CanvasContent: View {
         if self.voiceWakeEnabled {
             let voiceStatus = self.appModel.voiceWake.statusText
             if voiceStatus.localizedCaseInsensitiveContains("microphone permission") {
-                return StatusPill.Activity(title: "Mic permission", systemImage: "mic.slash", tint: .orange)
+                return StatusPill.Activity(title: "Mic permission", systemImage: "mic.slash", tint: EllaBrand.warning)
             }
             if voiceStatus == "Paused" {
                 // Talk mode intentionally pauses voice wake to release the mic. Don't spam the HUD for that case.

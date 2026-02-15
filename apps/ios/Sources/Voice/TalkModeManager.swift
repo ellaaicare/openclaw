@@ -23,6 +23,40 @@ final class TalkModeManager: NSObject {
     var statusText: String = "Off"
     /// 0..1-ish (not calibrated). Intended for UI feedback only.
     var micLevel: Double = 0
+    /// Reads from UserDefaults directly to avoid @Observable mutation during init.
+    var voiceMode: TalkVoiceMode {
+        get {
+            let raw = UserDefaults.standard.string(forKey: "talk.voiceMode")
+                ?? TalkVoiceMode.elevenLabsTTS.rawValue
+            return TalkVoiceMode(rawValue: raw) ?? .elevenLabsTTS
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "talk.voiceMode")
+        }
+    }
+    /// Reads V2V proxy mode from UserDefaults (v3-fast, v3-rich, v3-live).
+    var v2vMode: GrokV2VMode {
+        get {
+            let raw = UserDefaults.standard.string(forKey: "talk.v2vMode")
+                ?? GrokV2VMode.v3Rich.rawValue
+            return GrokV2VMode(rawValue: raw) ?? .v3Rich
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "talk.v2vMode")
+        }
+    }
+    /// Shared key for voice proxy authentication.
+    var voiceProxyKey: String {
+        get {
+            UserDefaults.standard.string(forKey: "talk.voiceProxyKey")?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        set {
+            UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                                      forKey: "talk.voiceProxyKey")
+        }
+    }
+    private var v2vSession: GrokV2VSession?
 
     private enum CaptureMode {
         case idle
@@ -98,16 +132,43 @@ final class TalkModeManager: NSObject {
         self.gateway = gateway
     }
 
+    func setVoiceMode(_ mode: TalkVoiceMode) {
+        guard mode != self.voiceMode else { return }
+        let wasActive = self.isEnabled && (self.isListening || self.v2vSession != nil)
+        if wasActive {
+            self.stop()
+            self.voiceMode = mode
+            self.isEnabled = true  // stop() sets it to false
+            Task { await self.start() }
+        } else {
+            self.voiceMode = mode
+        }
+    }
+
+    func setV2VMode(_ mode: GrokV2VMode) {
+        guard mode != self.v2vMode else { return }
+        let wasActive = self.isEnabled && self.v2vSession != nil
+        if wasActive {
+            self.stop()
+            self.v2vMode = mode
+            self.isEnabled = true
+            Task { await self.start() }
+        } else {
+            self.v2vMode = mode
+        }
+    }
+
     func updateGatewayConnected(_ connected: Bool) {
         self.gatewayConnected = connected
         if connected {
             // If talk mode is enabled before the gateway connects (common on cold start),
-            // kick recognition once we're online so the UI doesn’t stay “Offline”.
+            // kick recognition once we're online so the UI doesn't stay "Offline".
             if self.isEnabled, !self.isListening, self.captureMode != .pushToTalk {
                 Task { await self.start() }
             }
         } else {
-            if self.isEnabled, !self.isSpeaking {
+            // V2V mode doesn't need the gateway — don't overwrite its status.
+            if self.isEnabled, !self.isSpeaking, self.voiceMode != .grokV2V {
                 self.statusText = "Offline"
             }
         }
@@ -138,6 +199,23 @@ final class TalkModeManager: NSObject {
         guard self.isEnabled else { return }
         guard self.captureMode != .pushToTalk else { return }
         if self.isListening { return }
+
+        // V2V mode connects directly to the voice proxy — no gateway needed.
+        if self.voiceMode == .grokV2V {
+            self.logger.info("start (v2v)")
+            self.statusText = "Requesting permissions…"
+            let micOk = await Self.requestMicrophonePermission()
+            guard micOk else {
+                self.logger.warning("start blocked: microphone permission denied")
+                self.statusText = Self.permissionMessage(
+                    kind: "Microphone",
+                    status: AVAudioSession.sharedInstance().recordPermission)
+                return
+            }
+            await self.startV2V()
+            return
+        }
+
         guard self.gatewayConnected else {
             self.statusText = "Offline"
             return
@@ -153,6 +231,7 @@ final class TalkModeManager: NSObject {
                 status: AVAudioSession.sharedInstance().recordPermission)
             return
         }
+
         let speechOk = await Self.requestSpeechPermission()
         guard speechOk else {
             self.logger.warning("start blocked: speech permission denied")
@@ -180,7 +259,96 @@ final class TalkModeManager: NSObject {
         }
     }
 
+    // MARK: - Grok V2V
+
+    private func startV2V() async {
+        self.statusText = "Connecting to voice…"
+        self.logger.info("startV2V mode=\(self.voiceMode.rawValue, privacy: .public)")
+        GatewayDiagnostics.log("talk: startV2V step=1-entry")
+
+        let v2vModeSetting = self.v2vMode
+        let proxyKey = self.voiceProxyKey
+        let session = GrokV2VSession(
+            uid: "ios-dev",
+            mode: v2vModeSetting.rawValue,
+            proxyKey: proxyKey.isEmpty ? nil : proxyKey,
+            pcmPlayer: self.pcmPlayer
+        )
+        GatewayDiagnostics.log("talk: startV2V step=2-session-created")
+
+        session.onStateChange = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .idle:
+                self.statusText = "Off"
+            case .connecting:
+                self.statusText = "Connecting…"
+            case .connected:
+                self.statusText = "Listening"
+                self.isListening = true
+            case .error(let msg):
+                self.statusText = "Error: \(msg)"
+                self.isListening = false
+            }
+        }
+        session.onTranscript = { [weak self] event in
+            guard let self else { return }
+            switch event.role {
+            case .user:
+                self.statusText = "You: \(event.text.prefix(60))"
+            case .assistant:
+                self.isSpeaking = true
+                self.statusText = "Speaking…"
+            }
+        }
+        session.onSessionEnd = { [weak self] reason in
+            guard let self else { return }
+            self.logger.info("v2v session ended: \(reason, privacy: .public)")
+            self.stop()
+        }
+        self.v2vSession = session
+        GatewayDiagnostics.log("talk: startV2V step=3-callbacks-set")
+
+        do {
+            try Self.configureAudioSession(forV2V: true)
+            GatewayDiagnostics.log("talk: startV2V step=4-audio-session-ok")
+
+            // Connect WebSocket only (no audio tap — we install it here).
+            await session.startWebSocketOnly()
+            GatewayDiagnostics.log("talk: startV2V step=5-ws-connected")
+
+            // Install mic tap on TalkModeManager's engine (same pattern as ElevenLabs path).
+            let input = self.audioEngine.inputNode
+            let format = input.inputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                self.statusText = "Invalid audio input"
+                return
+            }
+            // Get a nonisolated tap block that converts 48kHz → 24kHz PCM16 and sends via WebSocket.
+            // Must not capture the @MainActor session reference in the audio render thread callback.
+            guard let tapBlock = session.configureConverterAndMakeTapBlock(hwFormat: format) else {
+                self.statusText = "Audio converter failed"
+                return
+            }
+            input.removeTap(onBus: 0)
+            input.installTap(onBus: 0, bufferSize: 2048, format: format, block: tapBlock)
+            self.inputTapInstalled = true
+            self.audioEngine.prepare()
+            try self.audioEngine.start()
+            GatewayDiagnostics.log("talk: startV2V step=6-mic-tap-installed")
+
+            self.isListening = true
+            self.statusText = "Listening"
+        } catch {
+            self.statusText = "V2V start failed: \(error.localizedDescription)"
+            self.logger.error("startV2V failed: \(error.localizedDescription, privacy: .public)")
+            GatewayDiagnostics.log("talk: startV2V FAILED: \(error.localizedDescription)")
+        }
+    }
+
     func stop() {
+        self.v2vSession?.stop()
+        self.v2vSession = nil
         self.isEnabled = false
         self.isListening = false
         self.isPushToTalkActive = false
@@ -221,6 +389,9 @@ final class TalkModeManager: NSObject {
     func suspendForBackground() -> Bool {
         guard self.isEnabled else { return false }
         let wasActive = self.isListening || self.isSpeaking || self.isPushToTalkActive
+
+        self.v2vSession?.stop()
+        self.v2vSession = nil
 
         self.isListening = false
         self.isPushToTalkActive = false
@@ -1866,10 +2037,12 @@ extension TalkModeManager {
         }
     }
 
-    static func configureAudioSession() throws {
+    static func configureAudioSession(forV2V: Bool = false) throws {
         let session = AVAudioSession.sharedInstance()
-        // Prefer `.spokenAudio` for STT; it tends to preserve speech energy better than `.voiceChat`.
-        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [
+        // `.spokenAudio` preserves speech energy for STT (ElevenLabs path).
+        // `.voiceChat` enables hardware echo cancellation for full-duplex V2V.
+        let mode: AVAudioSession.Mode = forV2V ? .voiceChat : .spokenAudio
+        try session.setCategory(.playAndRecord, mode: mode, options: [
             .allowBluetoothHFP,
             .defaultToSpeaker,
         ])

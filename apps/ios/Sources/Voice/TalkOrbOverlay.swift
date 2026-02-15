@@ -31,7 +31,7 @@ struct TalkOrbOverlay: View {
                             colors: [
                                 seam.opacity(0.75 + (0.20 * mic)),
                                 seam.opacity(0.40),
-                                Color.black.opacity(0.55),
+                                EllaBrand.backgroundDark.opacity(0.55),
                             ],
                             center: .center,
                             startRadius: 1,
@@ -42,7 +42,7 @@ struct TalkOrbOverlay: View {
                         Circle()
                             .stroke(seam.opacity(0.35), lineWidth: 1))
                     .shadow(color: seam.opacity(0.32), radius: 26, x: 0, y: 0)
-                    .shadow(color: Color.black.opacity(0.50), radius: 22, x: 0, y: 10)
+                    .shadow(color: EllaBrand.backgroundDark.opacity(0.50), radius: 22, x: 0, y: 10)
             }
             .contentShape(Circle())
             .onTapGesture {
@@ -64,7 +64,7 @@ struct TalkOrbOverlay: View {
                     .padding(.vertical, 8)
                     .background(
                         Capsule()
-                            .fill(Color.black.opacity(0.40))
+                            .fill(EllaBrand.backgroundDark.opacity(0.40))
                             .overlay(
                                 Capsule().stroke(seam.opacity(0.22), lineWidth: 1)))
             }
