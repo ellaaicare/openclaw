@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { loadConfig } from "../config/config.js";
 import { formatCliCommand } from "../cli/command-format.js";
+import type { loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { VERSION } from "../version.js";
 import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
@@ -13,6 +13,18 @@ type UpdateCheckState = {
   lastNotifiedVersion?: string;
   lastNotifiedTag?: string;
 };
+
+type UpdateAvailable = {
+  currentVersion: string;
+  latestVersion: string;
+  channel: string;
+};
+
+let updateAvailableCache: UpdateAvailable | null = null;
+
+export function getUpdateAvailable(): UpdateAvailable | null {
+  return updateAvailableCache;
+}
 
 const UPDATE_CHECK_FILENAME = "update-check.json";
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -100,6 +112,11 @@ export async function runGatewayUpdateCheck(params: {
 
   const cmp = compareSemverStrings(VERSION, resolved.version);
   if (cmp != null && cmp < 0) {
+    updateAvailableCache = {
+      currentVersion: VERSION,
+      latestVersion: resolved.version,
+      channel: tag,
+    };
     const shouldNotify =
       state.lastNotifiedVersion !== resolved.version || state.lastNotifiedTag !== tag;
     if (shouldNotify) {
