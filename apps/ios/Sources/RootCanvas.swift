@@ -3,6 +3,7 @@ import UIKit
 
 struct RootCanvas: View {
     @Environment(NodeAppModel.self) private var appModel
+    @Environment(AgoraService.self) private var agoraService
     @Environment(GatewayConnectionController.self) private var gatewayController
     @Environment(VoiceWakeManager.self) private var voiceWake
     @Environment(\.colorScheme) private var systemColorScheme
@@ -263,9 +264,11 @@ struct RootCanvas: View {
 
 private struct CanvasContent: View {
     @Environment(NodeAppModel.self) private var appModel
+    @Environment(AgoraService.self) private var agoraService
     @AppStorage("talk.enabled") private var talkEnabled: Bool = false
     @AppStorage("talk.button.enabled") private var talkButtonEnabled: Bool = true
     @State private var showGatewayActions: Bool = false
+    @State private var agoraToken = "007eJxTYCicahIYphU82ULVz9S9Usvpk3jSkr0qEf//8tqHbXvxY4ECg6lpSoqlcVpSWpqJpYlZinlSMpBplmaWmpScmmpiZvT26fTMhkBGhlIZaQZGIGQB4lzzmZlMYJIZTLKASV6GktTiEt3UnJxE3dyyAmYGS0sLAEkcKRA="
     var systemColorScheme: ColorScheme
     var gatewayStatus: StatusPill.GatewayState
     var voiceWakeEnabled: Bool
@@ -286,6 +289,26 @@ private struct CanvasContent: View {
                     self.openChat()
                 }
                 .accessibilityLabel("Chat")
+
+                // Agora Phase 1 test button
+                OverlayButton(
+                    systemImage: self.agoraService.isInCall ? "phone.down.fill" : "phone.fill",
+                    brighten: self.brightenButtons,
+                    tint: self.agoraService.isInCall ? .red : .blue,
+                    isActive: self.agoraService.isInCall
+                ) {
+                    if self.agoraService.isInCall {
+                        self.agoraService.leaveChannel()
+                    } else {
+                        self.agoraService.joinChannel(
+                            channelName: "test-ella-mvp",
+                            token: self.agoraToken,
+                            uid: 998
+                        )
+                    }
+                }
+                .accessibilityLabel(self.agoraService.isInCall ? "End Agora Test" : "Test Agora")
+
 
                 if self.talkButtonEnabled {
                     // Talk mode lives on a side bubble so it doesn't get buried in settings.

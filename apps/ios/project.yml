@@ -14,6 +14,9 @@ packages:
     path: ../shared/OpenClawKit
   Swabble:
     path: ../../Swabble
+  AgoraRtcEngine:
+    url: https://github.com/AgoraIO/AgoraRtcEngine_iOS
+    from: 4.4.0
 
 schemes:
   OpenClaw:
@@ -48,6 +51,8 @@ targets:
         product: OpenClawProtocol
       - package: Swabble
         product: SwabbleKit
+      - package: AgoraRtcEngine
+        product: RtcBasic
       - sdk: AppIntents.framework
     preBuildScripts:
       - name: SwiftFormat (lint)
@@ -103,6 +108,7 @@ targets:
         UIBackgroundModes:
           - audio
           - remote-notification
+          - voip
         NSLocalNetworkUsageDescription: OpenClaw discovers and connects to your OpenClaw gateway on the local network.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
@@ -219,6 +225,8 @@ targets:
       - target: OpenClaw
       - package: Swabble
         product: SwabbleKit
+      - package: AgoraRtcEngine
+        product: RtcBasic
       - sdk: AppIntents.framework
     settings:
       base:

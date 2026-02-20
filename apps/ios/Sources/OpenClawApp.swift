@@ -65,6 +65,7 @@ private let debugLog = Logger(subsystem: "ai.openclaw.ios", category: "debug")
 struct OpenClawApp: App {
     @State private var appModel: NodeAppModel
     @State private var gatewayController: GatewayConnectionController
+    @State private var agoraService = AgoraService()
     @UIApplicationDelegateAdaptor(OpenClawAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
@@ -124,8 +125,10 @@ struct OpenClawApp: App {
                 .environment(self.appModel)
                 .environment(self.appModel.voiceWake)
                 .environment(self.gatewayController)
+                .environment(self.agoraService)
                 .task {
                     self.appDelegate.appModel = self.appModel
+                    self.agoraService.initialize()
                 }
                 .onOpenURL { url in
                     Task { await self.appModel.handleDeepLink(url: url) }
